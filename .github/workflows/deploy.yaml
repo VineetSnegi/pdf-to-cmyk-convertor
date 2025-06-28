@@ -55,27 +55,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Test GITHUB_OUTPUT
-        run: |
-          echo "Testing GITHUB_OUTPUT write"
-          echo "test_output=hello" >> "$GITHUB_OUTPUT"
-          echo "Contents of GITHUB_OUTPUT after test:"
-          cat "$GITHUB_OUTPUT" || echo "Error: Failed to read GITHUB_OUTPUT"
-
       - name: Build Docker image
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building image: $IMAGE"
-          if ! docker buildx build \
+          docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new \
             --load \
             . \
-            --build-arg BUILDKIT_INLINE_CACHE=1; then
-            echo "Error: Docker build failed"
-            exit 1
-          fi
+            --build-arg BUILDKIT_INLINE_CACHE=1
         env:
           DOCKER_BUILDKIT: 1
 
@@ -84,23 +74,8 @@ jobs:
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Pushing image: $IMAGE"
-          if ! docker push "$IMAGE"; then
-            echo "Error: Docker push failed"
-            exit 1
-          fi
-          echo "Docker push completed successfully"
-          echo "Setting output: image=$IMAGE"
+          docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Contents of GITHUB_OUTPUT:"
-          cat "$GITHUB_OUTPUT" || echo "Error: Failed to read GITHUB_OUTPUT"
-        env:
-          DOCKER_BUILDKIT: 1
-
-      - name: List images in Artifact Registry
-        run: |
-          echo "Listing images in Artifact Registry:"
-          gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
-            --format="value(NAME,TAGS)" || echo "Failed to list images"
 
       - name: Clean up Docker cache
         if: always()
@@ -112,21 +87,10 @@ jobs:
     name: Deploy to Cloud Run
     needs: build-and-push
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: Debug image output
-        run: |
-          echo "Received image from build-and-push: ${{ needs.build-and-push.outputs.image }}"
-          if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
-            echo "Error: Image output is empty"
-            exit 1
-          fi
-
       - name: Authenticate to Google Cloud
-        id: auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
@@ -158,12 +122,9 @@ jobs:
     needs: deploy
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
 
     steps:
       - name: Authenticate to Google Cloud
-        id: auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
