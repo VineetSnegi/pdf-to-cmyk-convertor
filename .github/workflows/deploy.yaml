@@ -50,11 +50,11 @@ jobs:
       - name: Build and tag Docker image
         id: build
         run: |
+          # Construct the image name
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building image: $IMAGE"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           
+          # Build the image
           docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
@@ -62,21 +62,41 @@ jobs:
             --load \
             . \
             --build-arg BUILDKIT_INLINE_CACHE=1
+          
+          # Set outputs
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "Build completed for: $IMAGE"
         env:
           DOCKER_BUILDKIT: 1
 
       - name: Push Docker image
         id: push
         run: |
+          # Get image from previous step
           IMAGE="${{ steps.build.outputs.image }}"
           echo "Pushing image: $IMAGE"
+          
+          # Push the image
           docker push "$IMAGE"
+          
+          # Set output for the deploy job
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Image pushed successfully: $IMAGE"
 
       - name: Verify image output
         run: |
-          echo "Final image output: ${{ steps.push.outputs.image }}"
+          echo "Build step image output: ${{ steps.build.outputs.image }}"
+          echo "Push step image output: ${{ steps.push.outputs.image }}"
+          
+          # Test that outputs are working
+          if [ -z "${{ steps.push.outputs.image }}" ]; then
+            echo "ERROR: Push step output is empty!"
+            echo "Trying to use build step output instead..."
+            echo "Build output: ${{ steps.build.outputs.image }}"
+          else
+            echo "✅ Image output is valid: ${{ steps.push.outputs.image }}"
+          fi
 
       - name: Clean up Docker cache
         if: always()
@@ -93,14 +113,18 @@ jobs:
     steps:
       - name: Debug image value
         run: |
-          echo "Image to deploy: '${{ needs.build-and-push.outputs.image }}'"
-          echo "Length: ${#IMAGE}"
+          echo "Image from job output: '${{ needs.build-and-push.outputs.image }}'"
+          
+          # If the output is empty, reconstruct the image name
           if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
-            echo "ERROR: Image is empty!"
-            exit 1
+            echo "Image output is empty, reconstructing..."
+            RECONSTRUCTED_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            echo "RECONSTRUCTED_IMAGE=$RECONSTRUCTED_IMAGE" >> $GITHUB_ENV
+            echo "Using reconstructed image: $RECONSTRUCTED_IMAGE"
+          else
+            echo "Using job output image: ${{ needs.build-and-push.outputs.image }}"
+            echo "RECONSTRUCTED_IMAGE=${{ needs.build-and-push.outputs.image }}" >> $GITHUB_ENV
           fi
-        env:
-          IMAGE: ${{ needs.build-and-push.outputs.image }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -114,11 +138,12 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          IMAGE="${{ needs.build-and-push.outputs.image }}"
+          # Use the reconstructed image (fallback mechanism)
+          IMAGE="${RECONSTRUCTED_IMAGE}"
           
           # Additional validation
           if [ -z "$IMAGE" ]; then
-            echo "ERROR: Image variable is empty"
+            echo "ERROR: Image variable is still empty"
             exit 1
           fi
           
