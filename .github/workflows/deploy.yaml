@@ -79,18 +79,36 @@ jobs:
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building and pushing image: $IMAGE"
-          docker buildx build \
+          if ! docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new \
             --push \
             . \
-            --build-arg BUILDKIT_INLINE_CACHE=1
-          echo "Setting output: image=$IMAGE"
+            --build-arg BUILDKIT_INLINE_CACHE=1; then
+            echo "Error: Docker buildx build failed"
+            exit 1
+          fi
+          echo "Docker build and push completed successfully"
+          echo "Writing to GITHUB_OUTPUT: image=$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
+          echo "Contents of GITHUB_OUTPUT:"
+          cat "$GITHUB_OUTPUT" || echo "Error: Failed to read GITHUB_OUTPUT"
         env:
           DOCKER_BUILDKIT: 1
+
+      - name: Verify image in Artifact Registry
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Verifying image: $IMAGE"
+          if gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
+            --filter="tags:${{ github.sha }}" \
+            --format="value(NAME)" | grep -q "$IMAGE"; then
+            echo "Image found in Artifact Registry"
+          else
+            echo "Error: Image not found in Artifact Registry"
+            exit 1
+          fi
 
       - name: Clean up Docker cache
         if: always()
@@ -129,7 +147,7 @@ jobs:
       - name: Deploy to Cloud Run
         run: |
           echo "Deploying image: ${{ needs.build-and-push.outputs.image }}"
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --image "${{ needs.build-and-push.outputs.image }}" \
             --region "${{ env.REGION }}" \
             --platform managed \
@@ -165,9 +183,9 @@ jobs:
 
       - name: Delete old untagged images
         run: |
-          gcloud artifacts docker images list ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }} \
+          gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
             --filter="-tags:*" \
             --format='value(DIGEST)' | \
           xargs -I {} gcloud artifacts docker images delete \
-            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{} \
+            "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{}" \
             --quiet || true
