@@ -45,25 +45,39 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
+      - name: Validate environment variables
+        run: |
+          echo "Validating environment variables:"
+          echo "PROJECT_ID: ${{ env.PROJECT_ID }}"
+          echo "REGION: ${{ env.REGION }}"
+          echo "REPOSITORY: ${{ env.REPOSITORY }}"
+          echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
+          echo "SERVICE_ACCOUNT: ${{ env.SERVICE_ACCOUNT }}"
+          echo "IMAGE_NAME: ${{ env.IMAGE_NAME }}"
+          echo "GITHUB_SHA: ${{ github.sha }}"
+          if [ -z "${{ env.PROJECT_ID }}" ] || [ -z "${{ env.REGION }}" ] || [ -z "${{ env.REPOSITORY }}" ] || [ -z "${{ env.SERVICE_NAME }}" ] || [ -z "${{ env.SERVICE_ACCOUNT }}" ] || [ -z "${{ env.IMAGE_NAME }}" ] || [ -z "${{ github.sha }}" ]; then
+            echo "Error: One or more environment variables are unset or empty"
+            exit 1
+          fi
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Computed IMAGE: $IMAGE"
+          if [[ ! "$IMAGE" =~ ^[a-z0-9-]+\-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/pdf-cmyk-converter:[0-9a-f]{40}$ ]]; then
+            echo "Error: IMAGE variable is malformed: $IMAGE"
+            exit 1
+          fi
 
       - name: Build and push Docker image
         id: build-push
         run: |
-          IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          echo "Building image: $IMAGE"
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Building and pushing image: $IMAGE"
           docker buildx build \
-            --tag $IMAGE \
+            --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new \
             --push \
-            .
+            . \
+            --build-arg BUILDKIT_INLINE_CACHE=1
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
         env:
           DOCKER_BUILDKIT: 1
