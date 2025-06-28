@@ -55,22 +55,40 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Build and push Docker image
-        id: build-push
+      - name: Test GITHUB_OUTPUT
+        run: |
+          echo "Testing GITHUB_OUTPUT write"
+          echo "test_output=hello" >> "$GITHUB_OUTPUT"
+          echo "Contents of GITHUB_OUTPUT after test:"
+          cat "$GITHUB_OUTPUT" || echo "Error: Failed to read GITHUB_OUTPUT"
+
+      - name: Build Docker image
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Building and pushing image: $IMAGE"
+          echo "Building image: $IMAGE"
           if ! docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new \
-            --push \
+            --load \
             . \
             --build-arg BUILDKIT_INLINE_CACHE=1; then
-            echo "Error: Docker build or push failed"
+            echo "Error: Docker build failed"
             exit 1
           fi
-          echo "Docker build and push completed successfully"
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: Push Docker image
+        id: build-push
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Pushing image: $IMAGE"
+          if ! docker push "$IMAGE"; then
+            echo "Error: Docker push failed"
+            exit 1
+          fi
+          echo "Docker push completed successfully"
           echo "Setting output: image=$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Contents of GITHUB_OUTPUT:"
