@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PDF to CMYK Converter</title>
+</head>
+<body>
+  <h1>Upload PDF and Get CMYK</h1>
+  <input type="file" id="pdfInput" accept=".pdf">
+  <button id="uploadBtn" onclick="handleUpload()">Upload</button>
+  <p id="status"></p>
+  <a id="downloadLink" href="#" style="display:none;" download>Download CMYK PDF</a>
+
+  <script>
+    const BACKEND_URL = "https://pdf-cmyk-service-17999601924.us-central1.run.app";
+
+    async function handleUpload() {
+      const fileInput = document.getElementById("pdfInput");
+      const uploadBtn = document.getElementById("uploadBtn");
+      const status = document.getElementById("status");
+      const downloadLink = document.getElementById("downloadLink");
+
+      if (!fileInput.files[0]) {
+        alert("Please select a PDF file first.");
+        return;
+      }
+
+      const file = fileInput.files[0];
+      const fileName = file.name;
+
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = "Uploading...";
+      status.innerText = "";
+      downloadLink.style.display = "none";
+
+      try {
+        // Step 1: Get signed upload URL
+        status.innerText = "Requesting upload URL...";
+        const uploadResp = await fetch(`${BACKEND_URL}/generate-upload-url`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ file_name: fileName }),
+        });
+
+        const uploadData = await uploadResp.json();
+        const uploadUrl = uploadData.upload_url;
+        const generatedFileName = uploadData.file_name;
+
+        // Step 2: Upload to GCS
+        status.innerText = "Uploading file to Cloud Storage...";
+        await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/pdf" },
+          body: file,
+        });
+
+        // Step 3: Poll Firestore for conversion completion
+        status.innerText = "Waiting for conversion...";
+        let retries = 0;
+        const maxRetries = 20;
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        while (retries < maxRetries) {
+          await wait(5000); // wait 5s
+          const checkResp = await fetch(`${BACKEND_URL}/check-status/${generatedFileName}`);
+          if (checkResp.status === 200) {
+            const result = await checkResp.json();
+            status.innerText = "✅ Conversion complete!";
+            downloadLink.href = result.download_url;
+            downloadLink.style.display = "inline-block";
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = "Upload";
+            return;
+          }
+          retries++;
+          status.innerText = `Checking status... (${retries}/${maxRetries})`;
+        }
+
+        status.innerText = "❌ Timed out waiting for conversion.";
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = "Upload";
+      } catch (error) {
+        console.error("Upload failed:", error);
+        status.innerText = "❌ Something went wrong.";
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = "Upload";
+      }
+    }
+  </script>
+</body>
+</html>
