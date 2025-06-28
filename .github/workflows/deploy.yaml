@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      image: ${{ steps.push.outputs.image }}  # ✅ Match step ID here
+      image: ${{ steps.push.outputs.image }}
 
     steps:
       - name: Checkout code
@@ -47,10 +47,14 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Build Docker image
+      - name: Build and tag Docker image
+        id: build
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Building image: $IMAGE"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          
           docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
@@ -62,12 +66,17 @@ jobs:
           DOCKER_BUILDKIT: 1
 
       - name: Push Docker image
-        id: push  # ✅ Must match outputs.image reference
+        id: push
         run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          IMAGE="${{ steps.build.outputs.image }}"
           echo "Pushing image: $IMAGE"
           docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Image pushed successfully: $IMAGE"
+
+      - name: Verify image output
+        run: |
+          echo "Final image output: ${{ steps.push.outputs.image }}"
 
       - name: Clean up Docker cache
         if: always()
@@ -84,7 +93,14 @@ jobs:
     steps:
       - name: Debug image value
         run: |
-          echo "Image to deploy: ${{ needs.build-and-push.outputs.image }}"
+          echo "Image to deploy: '${{ needs.build-and-push.outputs.image }}'"
+          echo "Length: ${#IMAGE}"
+          if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
+            echo "ERROR: Image is empty!"
+            exit 1
+          fi
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -98,19 +114,38 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
+          IMAGE="${{ needs.build-and-push.outputs.image }}"
+          
+          # Additional validation
+          if [ -z "$IMAGE" ]; then
+            echo "ERROR: Image variable is empty"
+            exit 1
+          fi
+          
+          echo "Deploying image: $IMAGE"
+          echo "Service name: ${{ env.SERVICE_NAME }}"
+          echo "Region: ${{ env.REGION }}"
+          
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
-            --image "${{ needs.build-and-push.outputs.image }}" \
-            --region "${{ env.REGION }}" \
-            --platform managed \
-            --memory 1Gi \
-            --timeout 900 \
-            --service-account "${{ env.SERVICE_ACCOUNT }}" \
+            --image="$IMAGE" \
+            --region="${{ env.REGION }}" \
+            --platform=managed \
+            --memory=1Gi \
+            --timeout=900 \
+            --service-account="${{ env.SERVICE_ACCOUNT }}" \
             --allow-unauthenticated \
-            --set-env-vars BUCKET_INPUT=pdf-input-bucket-cmyk-convertor,BUCKET_OUTPUT=pdf-output-bucket-cmyk-convertor,SIGNED_URL_KEY=/secrets/key.json \
-            --update-secrets /secrets/key.json=SIGNED_URL_KEY:latest \
+            --set-env-vars="BUCKET_INPUT=pdf-input-bucket-cmyk-convertor,BUCKET_OUTPUT=pdf-output-bucket-cmyk-convertor,SIGNED_URL_KEY=/secrets/key.json" \
+            --update-secrets="/secrets/key.json=SIGNED_URL_KEY:latest" \
             --quiet
         env:
           CLOUDSDK_CORE_DISABLE_PROMPTS: 1
+
+      - name: Get service URL
+        run: |
+          SERVICE_URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --region="${{ env.REGION }}" \
+            --format="value(status.url)")
+          echo "Service deployed at: $SERVICE_URL"
 
   cleanup:
     name: Cleanup Old Images
@@ -131,9 +166,12 @@ jobs:
 
       - name: Delete old untagged images
         run: |
+          echo "Cleaning up old images..."
           gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
             --filter="-tags:*" \
             --format='value(DIGEST)' | \
+          head -10 | \
           xargs -I {} gcloud artifacts docker images delete \
             "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{}" \
             --quiet || true
+          echo "Cleanup completed"
