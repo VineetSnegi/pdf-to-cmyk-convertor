@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      image: ${{ steps.build-push.outputs.image }}
 
     steps:
       - name: Checkout code
@@ -58,21 +60,29 @@ jobs:
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building and pushing image: $IMAGE"
-          docker buildx build \
+          if ! docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new \
             --push \
             . \
-            --build-arg BUILDKIT_INLINE_CACHE=1
+            --build-arg BUILDKIT_INLINE_CACHE=1; then
+            echo "Error: Docker build or push failed"
+            exit 1
+          fi
+          echo "Docker build and push completed successfully"
           echo "Setting output: image=$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
+          echo "Contents of GITHUB_OUTPUT:"
+          cat "$GITHUB_OUTPUT" || echo "Error: Failed to read GITHUB_OUTPUT"
+        env:
+          DOCKER_BUILDKIT: 1
+
+      - name: List images in Artifact Registry
+        run: |
           echo "Listing images in Artifact Registry:"
           gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
             --format="value(NAME,TAGS)" || echo "Failed to list images"
-        env:
-          DOCKER_BUILDKIT: 1
 
       - name: Clean up Docker cache
         if: always()
