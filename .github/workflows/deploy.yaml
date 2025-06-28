@@ -19,7 +19,7 @@ jobs:
     name: Build & Push Image
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.image.outputs.name }}
+      image: ${{ steps.image.outputs.image }}
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
           
-          echo "name=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "✅ Built and pushed: $IMAGE"
 
   deploy:
