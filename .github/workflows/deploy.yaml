@@ -23,7 +23,6 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v1
         with:
-          version: 'latest'
           project_id: ${{ env.PROJECT_ID }}
           service_account_key: ${{ secrets.GCP_SA_KEY }}
 
@@ -34,6 +33,7 @@ jobs:
       - name: Build and push Docker image
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}"
+          echo "Building image: $IMAGE"
           docker build -t $IMAGE .
           docker push $IMAGE
 
@@ -41,13 +41,11 @@ jobs:
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE_NAME }}"
           gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image $IMAGE \
-            --region ${{ env.REGION }} \
-            --platform managed \
+            --image=$IMAGE \
+            --region=${{ env.REGION }} \
+            --platform=managed \
             --memory=1Gi \
             --timeout=900 \
             --service-account=${{ env.SERVICE_ACCOUNT }} \
             --allow-unauthenticated \
             --set-env-vars="BUCKET_INPUT=pdf-input-bucket-cmyk-convertor,BUCKET_OUTPUT=pdf-output-bucket-cmyk-convertor,SIGNED_URL_KEY=key.json"
-
-            
