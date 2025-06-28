@@ -1,4 +1,4 @@
-name: Deploy PDF to CMYK Converter
+name: Deploy PDF to CMYK Converter to Cloud Run
 
 on:
   push:
@@ -16,37 +16,54 @@ env:
 
 jobs:
   build-and-push:
-    name: Build & Push Image
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      image: ${{ steps.image.outputs.image }}
+      image: ${{ steps.build-and-push.outputs.image }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Cloud SDK
+      - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Configure Docker
+      - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Build and push image
-        id: image
+      - name: Build and push Docker image
+        id: build-and-push
         run: |
+          # Construct the image name
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Building and pushing image: $IMAGE"
           
+          # Build the image
           docker build -t "$IMAGE" .
+          
+          # Push the image
           docker push "$IMAGE"
           
+          # Set output for the deploy job
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "✅ Built and pushed: $IMAGE"
+
+      - name: Verify image output
+        run: |
+          echo "Image output: ${{ steps.build-and-push.outputs.image }}"
+          if [ -z "${{ steps.build-and-push.outputs.image }}" ]; then
+            echo "ERROR: Image output is empty!"
+            exit 1
+          fi
 
   deploy:
     name: Deploy to Cloud Run
@@ -55,21 +72,55 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
+      - name: Debug and prepare image
+        run: |
+          echo "Image from job output: '${{ needs.build-and-push.outputs.image }}'"
+          
+          # If the output is empty, reconstruct the image name
+          if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
+            echo "Image output is empty, reconstructing..."
+            DEPLOY_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+            echo "Using reconstructed image: $DEPLOY_IMAGE"
+          else
+            DEPLOY_IMAGE="${{ needs.build-and-push.outputs.image }}"
+            echo "Using job output image: $DEPLOY_IMAGE"
+          fi
+          
+          # Save to environment for next steps
+          echo "DEPLOY_IMAGE=$DEPLOY_IMAGE" >> $GITHUB_ENV
+          
+          # Final validation
+          if [ -z "$DEPLOY_IMAGE" ]; then
+            echo "ERROR: Deploy image is still empty!"
+            exit 1
+          fi
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Cloud SDK
+      - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
       - name: Deploy to Cloud Run
         run: |
+          echo "Deploying image: $DEPLOY_IMAGE"
+          echo "Service name: ${{ env.SERVICE_NAME }}"
+          echo "Region: ${{ env.REGION }}"
+          
+          # Additional validation before deployment
+          if [ -z "$DEPLOY_IMAGE" ]; then
+            echo "ERROR: DEPLOY_IMAGE environment variable is empty"
+            exit 1
+          fi
+          
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
-            --image="${{ needs.build-and-push.outputs.image }}" \
+            --image="$DEPLOY_IMAGE" \
             --region="${{ env.REGION }}" \
+            --platform=managed \
             --memory=1Gi \
             --timeout=900 \
             --service-account="${{ env.SERVICE_ACCOUNT }}" \
@@ -80,14 +131,16 @@ jobs:
 
       - name: Get service URL
         run: |
-          URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" --region="${{ env.REGION }}" --format="value(status.url)")
-          echo "🚀 Deployed at: $URL"
+          SERVICE_URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --region="${{ env.REGION }}" \
+            --format="value(status.url)")
+          echo "🚀 Service deployed at: $SERVICE_URL"
 
   cleanup:
     name: Cleanup Old Images
     needs: deploy
     runs-on: ubuntu-latest
-    if: success()
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - name: Authenticate to Google Cloud
@@ -95,17 +148,19 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Cloud SDK
+      - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Clean up old images
+      - name: Delete old untagged images
         run: |
-          gcloud artifacts docker images list \
-            "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
-            --filter="-tags:*" --format="value(DIGEST)" | \
-          head -5 | \
-          xargs -r -I {} gcloud artifacts docker images delete \
+          echo "Cleaning up old images..."
+          gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
+            --filter="-tags:*" \
+            --format='value(DIGEST)' | \
+          head -10 | \
+          xargs -I {} gcloud artifacts docker images delete \
             "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{}" \
-            --quiet 2>/dev/null || echo "No old images to clean"
+            --quiet || true
+          echo "✅ Cleanup completed"
