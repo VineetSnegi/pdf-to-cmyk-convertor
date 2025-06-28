@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      image: ${{ steps.build-push.outputs.image }}
+      image: ${{ steps.build_push.outputs.image }}  # 👈 use correct step id
 
     steps:
       - name: Checkout code
@@ -56,9 +56,10 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Build Docker image
+        id: build_image
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Building image: $IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
           docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
@@ -70,12 +71,12 @@ jobs:
           DOCKER_BUILDKIT: 1
 
       - name: Push Docker image
-        id: build-push
+        id: build_push
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Pushing image: $IMAGE"
           docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"  # ✅ pass image to next job
 
       - name: Clean up Docker cache
         if: always()
@@ -90,6 +91,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
+      - name: Debug image value
+        run: | 
+          echo "Image to deploy: ${{ needs.build-and-push.outputs.image }}"
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -102,7 +107,6 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          echo "Deploying image: ${{ needs.build-and-push.outputs.image }}"
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --image "${{ needs.build-and-push.outputs.image }}" \
             --region "${{ env.REGION }}" \
@@ -142,4 +146,3 @@ jobs:
           xargs -I {} gcloud artifacts docker images delete \
             "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{}" \
             --quiet || true
-
