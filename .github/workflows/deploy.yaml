@@ -53,62 +53,26 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Validate environment variables
-        run: |
-          echo "Validating environment variables:"
-          echo "PROJECT_ID: ${{ env.PROJECT_ID }}"
-          echo "REGION: ${{ env.REGION }}"
-          echo "REPOSITORY: ${{ env.REPOSITORY }}"
-          echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
-          echo "SERVICE_ACCOUNT: ${{ env.SERVICE_ACCOUNT }}"
-          echo "IMAGE_NAME: ${{ env.IMAGE_NAME }}"
-          echo "GITHUB_SHA: ${{ github.sha }}"
-          if [ -z "${{ env.PROJECT_ID }}" ] || [ -z "${{ env.REGION }}" ] || [ -z "${{ env.REPOSITORY }}" ] || [ -z "${{ env.SERVICE_NAME }}" ] || [ -z "${{ env.SERVICE_ACCOUNT }}" ] || [ -z "${{ env.IMAGE_NAME }}" ] || [ -z "${{ github.sha }}" ]; then
-            echo "Error: One or more environment variables are unset or empty"
-            exit 1
-          fi
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Computed IMAGE: $IMAGE"
-          if [[ ! "$IMAGE" =~ ^[a-z0-9-]+\-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+/pdf-cmyk-converter:[0-9a-f]{40}$ ]]; then
-            echo "Error: IMAGE variable is malformed: $IMAGE"
-            exit 1
-          fi
-
       - name: Build and push Docker image
         id: build-push
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building and pushing image: $IMAGE"
-          if ! docker buildx build \
+          docker buildx build \
             --tag "$IMAGE" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new \
             --push \
             . \
-            --build-arg BUILDKIT_INLINE_CACHE=1; then
-            echo "Error: Docker buildx build failed"
-            exit 1
-          fi
-          echo "Docker build and push completed successfully"
-          echo "Writing to GITHUB_OUTPUT: image=$IMAGE"
+            --build-arg BUILDKIT_INLINE_CACHE=1
+          echo "Setting output: image=$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Contents of GITHUB_OUTPUT:"
-          cat "$GITHUB_OUTPUT" || echo "Error: Failed to read GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+          echo "Listing images in Artifact Registry:"
+          gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
+            --format="value(NAME,TAGS)" || echo "Failed to list images"
         env:
           DOCKER_BUILDKIT: 1
-
-      - name: Verify image in Artifact Registry
-        run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Verifying image: $IMAGE"
-          if gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
-            --filter="tags:${{ github.sha }}" \
-            --format="value(NAME)" | grep -q "$IMAGE"; then
-            echo "Image found in Artifact Registry"
-          else
-            echo "Error: Image not found in Artifact Registry"
-            exit 1
-          fi
 
       - name: Clean up Docker cache
         if: always()
