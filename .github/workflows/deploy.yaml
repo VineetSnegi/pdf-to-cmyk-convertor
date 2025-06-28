@@ -45,6 +45,14 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
       - name: Validate environment variables
         run: |
           echo "Validating environment variables:"
@@ -78,7 +86,9 @@ jobs:
             --push \
             . \
             --build-arg BUILDKIT_INLINE_CACHE=1
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "Setting output: image=$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
         env:
           DOCKER_BUILDKIT: 1
 
@@ -97,6 +107,14 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
+      - name: Debug image output
+        run: |
+          echo "Received image from build-and-push: ${{ needs.build-and-push.outputs.image }}"
+          if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
+            echo "Error: Image output is empty"
+            exit 1
+          fi
+
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
@@ -110,13 +128,14 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
+          echo "Deploying image: ${{ needs.build-and-push.outputs.image }}"
           gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image ${{ needs.build-and-push.outputs.image }} \
-            --region ${{ env.REGION }} \
+            --image "${{ needs.build-and-push.outputs.image }}" \
+            --region "${{ env.REGION }}" \
             --platform managed \
             --memory 1Gi \
             --timeout 900 \
-            --service-account ${{ env.SERVICE_ACCOUNT }} \
+            --service-account "${{ env.SERVICE_ACCOUNT }}" \
             --allow-unauthenticated \
             --set-env-vars BUCKET_INPUT=pdf-input-bucket-cmyk-convertor,BUCKET_OUTPUT=pdf-output-bucket-cmyk-convertor,SIGNED_URL_KEY=/secrets/key.json \
             --update-secrets /secrets/key.json=SIGNED_URL_KEY:latest \
