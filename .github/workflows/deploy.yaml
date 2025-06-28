@@ -142,3 +142,4 @@ jobs:
           xargs -I {} gcloud artifacts docker images delete \
             "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{}" \
             --quiet || true
+
