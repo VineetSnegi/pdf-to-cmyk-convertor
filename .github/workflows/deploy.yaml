@@ -1,12 +1,10 @@
-name: Deploy PDF to CMYK Converter to Cloud Run
+name: Deploy PDF to CMYK Converter
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 env:
   PROJECT_ID: ${{ secrets.PROJECT_ID }}
@@ -18,91 +16,37 @@ env:
 
 jobs:
   build-and-push:
-    name: Build and Push Docker Image
+    name: Build & Push Image
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     outputs:
-      image: ${{ steps.push.outputs.image }}
+      image: ${{ steps.image.outputs.name }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
-        id: auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Google Cloud SDK
+      - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Configure Docker for Artifact Registry
-        run: |
-          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Build and tag Docker image
-        id: build
+      - name: Build and push image
+        id: image
         run: |
-          # Construct the image name
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Building image: $IMAGE"
           
-          # Build the image
-          docker buildx build \
-            --tag "$IMAGE" \
-            --cache-from type=local,src=/tmp/.buildx-cache \
-            --cache-to type=local,dest=/tmp/.buildx-cache-new \
-            --load \
-            . \
-            --build-arg BUILDKIT_INLINE_CACHE=1
-          
-          # Set outputs
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          echo "Build completed for: $IMAGE"
-        env:
-          DOCKER_BUILDKIT: 1
-
-      - name: Push Docker image
-        id: push
-        run: |
-          # Get image from previous step
-          IMAGE="${{ steps.build.outputs.image }}"
-          echo "Pushing image: $IMAGE"
-          
-          # Push the image
+          docker build -t "$IMAGE" .
           docker push "$IMAGE"
           
-          # Set output for the deploy job
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Image pushed successfully: $IMAGE"
-
-      - name: Verify image output
-        run: |
-          echo "Build step image output: ${{ steps.build.outputs.image }}"
-          echo "Push step image output: ${{ steps.push.outputs.image }}"
-          
-          # Test that outputs are working
-          if [ -z "${{ steps.push.outputs.image }}" ]; then
-            echo "ERROR: Push step output is empty!"
-            echo "Trying to use build step output instead..."
-            echo "Build output: ${{ steps.build.outputs.image }}"
-          else
-            echo "✅ Image output is valid: ${{ steps.push.outputs.image }}"
-          fi
-
-      - name: Clean up Docker cache
-        if: always()
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
+          echo "name=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "✅ Built and pushed: $IMAGE"
 
   deploy:
     name: Deploy to Cloud Run
@@ -111,50 +55,21 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: Debug image value
-        run: |
-          echo "Image from job output: '${{ needs.build-and-push.outputs.image }}'"
-          
-          # If the output is empty, reconstruct the image name
-          if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
-            echo "Image output is empty, reconstructing..."
-            RECONSTRUCTED_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-            echo "RECONSTRUCTED_IMAGE=$RECONSTRUCTED_IMAGE" >> $GITHUB_ENV
-            echo "Using reconstructed image: $RECONSTRUCTED_IMAGE"
-          else
-            echo "Using job output image: ${{ needs.build-and-push.outputs.image }}"
-            echo "RECONSTRUCTED_IMAGE=${{ needs.build-and-push.outputs.image }}" >> $GITHUB_ENV
-          fi
-
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Google Cloud SDK
+      - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
       - name: Deploy to Cloud Run
         run: |
-          # Use the reconstructed image (fallback mechanism)
-          IMAGE="${RECONSTRUCTED_IMAGE}"
-          
-          # Additional validation
-          if [ -z "$IMAGE" ]; then
-            echo "ERROR: Image variable is still empty"
-            exit 1
-          fi
-          
-          echo "Deploying image: $IMAGE"
-          echo "Service name: ${{ env.SERVICE_NAME }}"
-          echo "Region: ${{ env.REGION }}"
-          
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
-            --image="$IMAGE" \
+            --image="${{ needs.build-and-push.outputs.image }}" \
             --region="${{ env.REGION }}" \
-            --platform=managed \
             --memory=1Gi \
             --timeout=900 \
             --service-account="${{ env.SERVICE_ACCOUNT }}" \
@@ -162,21 +77,17 @@ jobs:
             --set-env-vars="BUCKET_INPUT=pdf-input-bucket-cmyk-convertor,BUCKET_OUTPUT=pdf-output-bucket-cmyk-convertor,SIGNED_URL_KEY=/secrets/key.json" \
             --update-secrets="/secrets/key.json=SIGNED_URL_KEY:latest" \
             --quiet
-        env:
-          CLOUDSDK_CORE_DISABLE_PROMPTS: 1
 
       - name: Get service URL
         run: |
-          SERVICE_URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
-            --region="${{ env.REGION }}" \
-            --format="value(status.url)")
-          echo "Service deployed at: $SERVICE_URL"
+          URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" --region="${{ env.REGION }}" --format="value(status.url)")
+          echo "🚀 Deployed at: $URL"
 
   cleanup:
     name: Cleanup Old Images
     needs: deploy
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: success()
 
     steps:
       - name: Authenticate to Google Cloud
@@ -184,19 +95,17 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Set up Google Cloud SDK
+      - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Delete old untagged images
+      - name: Clean up old images
         run: |
-          echo "Cleaning up old images..."
-          gcloud artifacts docker images list "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
-            --filter="-tags:*" \
-            --format='value(DIGEST)' | \
-          head -10 | \
-          xargs -I {} gcloud artifacts docker images delete \
+          gcloud artifacts docker images list \
+            "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}" \
+            --filter="-tags:*" --format="value(DIGEST)" | \
+          head -5 | \
+          xargs -r -I {} gcloud artifacts docker images delete \
             "${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}@{}" \
-            --quiet || true
-          echo "Cleanup completed"
+            --quiet 2>/dev/null || echo "No old images to clean"
