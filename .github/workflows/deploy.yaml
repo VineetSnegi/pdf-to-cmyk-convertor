@@ -2,9 +2,15 @@ name: Deploy PDF to CMYK Converter to Cloud Run
 
 on:
   push:
-    branches: [main]
+    branches: [main] # add the branch name you want to trigger the deployment for testing purpose
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy.yaml'
   pull_request:
     branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy.yaml'
 
 env:
   PROJECT_ID: ${{ secrets.PROJECT_ID }}
@@ -42,18 +48,12 @@ jobs:
 
       - name: Build and push Docker image
         id: build-and-push
+        working-directory: ./backend
         run: |
-          # Construct the image name
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building and pushing image: $IMAGE"
-          
-          # Build the image
           docker build -t "$IMAGE" .
-          
-          # Push the image
           docker push "$IMAGE"
-          
-          # Set output for the deploy job
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "✅ Built and pushed: $IMAGE"
 
@@ -69,27 +69,20 @@ jobs:
     name: Deploy to Cloud Run
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/backend-refactor')
 
     steps:
       - name: Debug and prepare image
         run: |
           echo "Image from job output: '${{ needs.build-and-push.outputs.image }}'"
-          
-          # If the output is empty, reconstruct the image name
           if [ -z "${{ needs.build-and-push.outputs.image }}" ]; then
-            echo "Image output is empty, reconstructing..."
             DEPLOY_IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
             echo "Using reconstructed image: $DEPLOY_IMAGE"
           else
             DEPLOY_IMAGE="${{ needs.build-and-push.outputs.image }}"
             echo "Using job output image: $DEPLOY_IMAGE"
           fi
-          
-          # Save to environment for next steps
           echo "DEPLOY_IMAGE=$DEPLOY_IMAGE" >> $GITHUB_ENV
-          
-          # Final validation
           if [ -z "$DEPLOY_IMAGE" ]; then
             echo "ERROR: Deploy image is still empty!"
             exit 1
@@ -108,15 +101,6 @@ jobs:
       - name: Deploy to Cloud Run
         run: |
           echo "Deploying image: $DEPLOY_IMAGE"
-          echo "Service name: ${{ env.SERVICE_NAME }}"
-          echo "Region: ${{ env.REGION }}"
-          
-          # Additional validation before deployment
-          if [ -z "$DEPLOY_IMAGE" ]; then
-            echo "ERROR: DEPLOY_IMAGE environment variable is empty"
-            exit 1
-          fi
-          
           gcloud run deploy "${{ env.SERVICE_NAME }}" \
             --image="$DEPLOY_IMAGE" \
             --region="${{ env.REGION }}" \
@@ -140,7 +124,7 @@ jobs:
     name: Cleanup Old Images
     needs: deploy
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/backend-refactor')
 
     steps:
       - name: Authenticate to Google Cloud
