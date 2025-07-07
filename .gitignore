@@ -8,3 +8,6 @@ __pycache__/
 key.json
 *.tar
 *.tmp
+node_modules
+package-lock.json
+package.json
