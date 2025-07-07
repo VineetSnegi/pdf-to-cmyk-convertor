@@ -69,7 +69,7 @@ jobs:
     name: Deploy to Cloud Run
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/backend-refactor')
 
     steps:
       - name: Debug and prepare image
@@ -124,7 +124,7 @@ jobs:
     name: Cleanup Old Images
     needs: deploy
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/backend-refactor')
 
     steps:
       - name: Authenticate to Google Cloud
