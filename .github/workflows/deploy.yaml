@@ -2,7 +2,7 @@ name: Deploy PDF to CMYK Converter to Cloud Run
 
 on:
   push:
-    branches: [main, backend-refactor]
+    branches: [main] # add the branch name you want to trigger the deployment for testing purpose
     paths:
       - 'backend/**'
       - '.github/workflows/deploy.yaml'
